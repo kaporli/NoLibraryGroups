@@ -28,20 +28,27 @@ const load = (): Settings => {
 let settings = load();
 const isEnabled = (sort: number) => settings[sort] ?? true;
 
+type Jsx = (type: unknown, props: any, key?: unknown) => unknown;
+
 const runtime = (window as any).SP_JSX;
-const originalJsx = runtime.jsx;
+const NAMES = ["jsx", "jsxs"] as const;
+const original = Object.fromEntries(NAMES.map((name) => [name, runtime[name]])) as Record<string, Jsx>;
+// Off after unload when another plugin wrapped on top of us and we cannot unhook
+let active = true;
 
 // Merge the library grid's sections into one
-const jsx = (type: unknown, props: any, key?: unknown) => {
+const merge = (props: any) => {
   const sections: Section[] | undefined = props?.childSections;
-  if (Array.isArray(sections) && sections.length > 1 && isEnabled(props.eSortBy)) {
-    props = {
-      ...props,
-      childSections: [{ ...sections[0], subSectionName: "", children: sections.flatMap((s) => s.children) }],
-    };
-  }
-  return originalJsx(type, props, key);
+  if (!active || !Array.isArray(sections) || sections.length < 2 || !isEnabled(props.eSortBy)) return props;
+  return {
+    ...props,
+    childSections: [{ ...sections[0], subSectionName: "", children: sections.flatMap((s) => s.children) }],
+  };
 };
+
+const patched = Object.fromEntries(
+  NAMES.map((name) => [name, ((type, props, key) => original[name](type, merge(props), key)) as Jsx]),
+);
 
 const Content = () => {
   const [current, setCurrent] = useState(settings);
@@ -62,14 +69,18 @@ const Content = () => {
 };
 
 export default definePlugin(() => {
-  runtime.jsx = jsx;
+  active = true;
+  Object.assign(runtime, patched);
   return {
     name: "No Library Groups",
     titleView: <div className={staticClasses.Title}>No Library Groups</div>,
     content: <Content />,
     icon: <FaThLarge />,
     onDismount() {
-      runtime.jsx = originalJsx;
+      // Restore only what is still ours; a later wrapper keeps calling us, so go inert instead
+      const ours = NAMES.every((name) => runtime[name] === patched[name]);
+      if (ours) Object.assign(runtime, original);
+      active = false;
     },
   };
 });
