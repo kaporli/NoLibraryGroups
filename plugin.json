@@ -1,0 +1,11 @@
+{
+  "name": "No Library Groups",
+  "author": "Kaporli",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["library", "ui"],
+    "description": "Removes the section headers and row breaks from library sorts like Last Played, Hours Played and Release Date. Toggle it per sort.",
+    "image": "https://raw.githubusercontent.com/Kaporli/NoLibraryGroups/main/images/lastplayed_comp.png"
+  }
+}
