@@ -1,5 +1,5 @@
-import { PanelSection, PanelSectionRow, ToggleField, staticClasses } from "@decky/ui";
-import { definePlugin } from "@decky/api";
+import { PanelSection, PanelSectionRow, ToggleField, findInReactTree, staticClasses } from "@decky/ui";
+import { definePlugin, routerHook } from "@decky/api";
 import { useState } from "react";
 import { FaThLarge } from "react-icons/fa";
 
@@ -28,27 +28,78 @@ const load = (): Settings => {
 let settings = load();
 const isEnabled = (sort: number) => settings[sort] ?? true;
 
-type Jsx = (type: unknown, props: any, key?: unknown) => unknown;
-
-const runtime = (window as any).SP_JSX;
-const NAMES = ["jsx", "jsxs"] as const;
-const original = Object.fromEntries(NAMES.map((name) => [name, runtime[name]])) as Record<string, Jsx>;
-// Off after unload when another plugin wrapped on top of us and we cannot unhook
+// Off after unload, so a wrapper still mounted in the library passes everything through
 let active = true;
+const ours = new WeakSet<object>();
+const wrapped = new WeakMap<object, unknown>();
 
-// Merge the library grid's sections into one
-const merge = (props: any) => {
-  const sections: Section[] | undefined = props?.childSections;
-  if (!active || !Array.isArray(sections) || sections.length < 2 || !isEnabled(props.eSortBy)) return props;
-  return {
-    ...props,
-    childSections: [{ ...sections[0], subSectionName: "", children: sections.flatMap((s) => s.children) }],
-  };
+// The same component with `after` applied to what it renders. Cached per component, so React keeps
+// its instances, and skipped for our own wrappers so a reused element is never wrapped twice.
+const wrap = (type: any, after: (out: any) => any): any => {
+  if (!type || typeof type !== "object" && typeof type !== "function" || ours.has(type) || type.prototype?.isReactComponent) return type;
+  const cached = wrapped.get(type);
+  if (cached) return cached;
+  let next: any;
+  if (typeof type === "function") {
+    next = function (this: unknown, ...args: unknown[]) {
+      const out = type.apply(this, args);
+      return active ? after(out) : out;
+    };
+  } else if (type.type) next = { ...type, type: wrap(type.type, after) };
+  else if (type.render) next = { ...type, render: wrap(type.render, after) };
+  else return type;
+  ours.add(next);
+  wrapped.set(type, next);
+  return next;
 };
 
-const patched = Object.fromEntries(
-  NAMES.map((name) => [name, ((type, props, key) => original[name](type, merge(props), key)) as Jsx]),
-);
+// The grouping component renders the grid with one entry per section; merge them into one
+const mergeSections = (out: any) => {
+  const grid = findInReactTree(out, (e) => Array.isArray(e?.props?.childSections));
+  const sections: Section[] | undefined = grid?.props.childSections;
+  if (sections && sections.length > 1 && isEnabled(grid.props.eSortBy)) {
+    grid.props.childSections = [{ ...sections[0], subSectionName: "", children: sections.flatMap((s) => s.children) }];
+  }
+  return out;
+};
+
+// A tab's grid renders the grouping component
+const patchTabGrid = (out: any) => {
+  const grouping = findInReactTree(out, (e) => e?.props?.appOverviews && "eSortBy" in e.props);
+  if (grouping) grouping.type = wrap(grouping.type, mergeSections);
+  return out;
+};
+
+// Steam's tabs and TabMaster's both hold the same tab grid, alone or inside a context provider
+const isTabGrid = (e: any) => e?.props?.collection && "eSortBy" in e.props;
+const withGrid = (grid: any) => ({ ...grid, type: wrap(grid.type, patchTabGrid) });
+
+// The library page's tab list; patched on copies so Steam's memoized tabs stay untouched
+const patchTabs = (out: any) => {
+  const holder = findInReactTree(out, (e) => Array.isArray(e?.props?.tabs));
+  if (!holder) return out;
+  holder.props.tabs = holder.props.tabs.map((tab: any) => {
+    const content = tab?.content;
+    if (isTabGrid(content)) return { ...tab, content: withGrid(content) };
+    const inner = content?.props?.children;
+    if (isTabGrid(inner)) return { ...tab, content: { ...content, props: { ...content.props, children: withGrid(inner) } } };
+    return tab;
+  });
+  return out;
+};
+
+// /library renders the page, which renders the memoized tab list (the same two levels TabMaster patches)
+const libraryPatch = (props: any) => {
+  if (!props?.children?.type) return props;
+  props.children.type = wrap(props.children.type, (page) => {
+    if (page?.type) page.type = wrap(page.type, (list) => {
+      if (list?.type) list.type = wrap(list.type, patchTabs);
+      return list;
+    });
+    return page;
+  });
+  return props;
+};
 
 const Content = () => {
   const [current, setCurrent] = useState(settings);
@@ -70,17 +121,15 @@ const Content = () => {
 
 export default definePlugin(() => {
   active = true;
-  Object.assign(runtime, patched);
+  const patch = routerHook.addPatch("/library", libraryPatch);
   return {
     name: "No Library Groups",
     titleView: <div className={staticClasses.Title}>No Library Groups</div>,
     content: <Content />,
     icon: <FaThLarge />,
     onDismount() {
-      // Restore only what is still ours; a later wrapper keeps calling us, so go inert instead
-      const ours = NAMES.every((name) => runtime[name] === patched[name]);
-      if (ours) Object.assign(runtime, original);
       active = false;
+      routerHook.removePatch("/library", patch);
     },
   };
 });

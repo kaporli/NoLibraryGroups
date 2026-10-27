@@ -1,6 +1,6 @@
 {
   "name": "no-library-groups",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Decky plugin that removes the groups from Steam library sorts",
   "type": "module",
   "scripts": {
