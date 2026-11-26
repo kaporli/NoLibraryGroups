@@ -64,9 +64,14 @@ const mergeSections = (out: any) => {
 };
 
 // A tab's grid renders the grouping component
-const patchTabGrid = (out: any) => {
+const patchTabGrid = (out: any): any => {
   const grouping = findInReactTree(out, (e) => e?.props?.appOverviews && "eSortBy" in e.props);
   if (grouping) grouping.type = wrap(grouping.type, mergeSections);
+  else {
+    // Newer clients nest a second tab grid that renders the grouping
+    const inner = findInReactTree(out, isTabGrid);
+    if (inner) inner.type = wrap(inner.type, patchTabGrid);
+  }
   return out;
 };
 
